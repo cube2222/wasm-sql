@@ -43,7 +43,7 @@
 
       ;; if $i is less than 0x20000 branch to loop
       (local.get $i)
-      (i32.const 16)
+      (i32.const 40_000_000)
       (i32.lt_s)
       (br_if $my_loop)
     )
