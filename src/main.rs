@@ -26,60 +26,42 @@ fn main() -> Result<()> {
         .ok_or(anyhow::format_err!("failed to find `memory` export"))?;
     let execute_fn = instance.get_typed_func::<(), ()>(&mut store, "execute")?;
 
-    assert_eq!(memory.size(&store), 2);
-    assert_eq!(memory.data_size(&store), 0x20000);
-    memory.data_mut(&mut store)[0] = 42 as u8;
+    memory.grow(&mut store, 4)?;
+    // assert_eq!(memory.size(&store), 4);
+    // assert_eq!(memory.data_size(&store), 65_536*4);
+    // memory.data_ptr()
+    for i in (0 as usize)..(4 as usize) {
+        (&mut memory.data_mut(&mut store)[i * 4..(i + 1) * 4]).copy_from_slice(&(i as u32).to_le_bytes());
+    }
+    let mut sum: u32 = 0;
+    for i in 0..4 {
+        sum += u32::from_le_bytes(memory.data(&store)[i * 4..(i + 1) * 4].try_into().unwrap());
+        // sum += i;
+    }
+
+    println!("{:?}", module.imports().collect::<Vec<_>>());
+
+    // let mut input_memory = Memory::new(&mut store, MemoryType::new(64, None)).unwrap();
+    // for i in (0 as usize)..(4 as usize) {
+    //     (&mut input_memory.data_mut(&mut store)[i * 4..(i + 1) * 4]).copy_from_slice(&(i as u32).to_le_bytes());
+    // }
+    //
+    // let instance = Instance::new(&mut store, &module, &[
+    //     Extern::Memory(input_memory),
+    // ])?;
+    // let execute_fn = instance.get_typed_func::<(), ()>(&mut store, "execute")?;
+
 
     println!("Executing after {:?}", start.elapsed()?);
     execute_fn.call(&mut store, ())?;
     println!("Executed once after {:?}", start.elapsed()?);
-    execute_fn.call(&mut store, ())?;
-    println!("Executed twice after {:?}", start.elapsed()?);
+    // execute_fn.call(&mut store, ())?;
+    // println!("Executed twice after {:?}", start.elapsed()?);
 
-    assert_eq!(memory.data_mut(&mut store)[0], 42);
-
-    // assert_eq!(memory.data_mut(&mut store)[0], 0);
-    // assert_eq!(memory.data_mut(&mut store)[0x1000], 1);
-    // assert_eq!(memory.data_mut(&mut store)[0x1003], 4);
-
-    // assert_eq!(size.call(&mut store, ())?, 2);
-    // assert_eq!(load_fn.call(&mut store, 0)?, 0);
-    // assert_eq!(load_fn.call(&mut store, 0x1000)?, 1);
-    // assert_eq!(load_fn.call(&mut store, 0x1003)?, 4);
-    // assert_eq!(load_fn.call(&mut store, 0x1ffff)?, 0);
-    // assert!(load_fn.call(&mut store, 0x20000).is_err()); // out of bounds trap
-    //
-    // println!("Mutating memory...");
-    // memory.data_mut(&mut store)[0x1003] = 5;
-    //
-    // store_fn.call(&mut store, (0x1002, 6))?;
-    // assert!(store_fn.call(&mut store, (0x20000, 0)).is_err()); // out of bounds trap
-    //
-    // assert_eq!(memory.data(&store)[0x1002], 6);
-    // assert_eq!(memory.data(&store)[0x1003], 5);
-    // assert_eq!(load_fn.call(&mut store, 0x1002)?, 6);
-    // assert_eq!(load_fn.call(&mut store, 0x1003)?, 5);
-    //
-    // // Grow memory.
-    // println!("Growing memory...");
-    // memory.grow(&mut store, 1)?;
-    // assert_eq!(memory.size(&store), 3);
-    // assert_eq!(memory.data_size(&store), 0x30000);
-    //
-    // assert_eq!(load_fn.call(&mut store, 0x20000)?, 0);
-    // store_fn.call(&mut store, (0x20000, 0))?;
-    // assert!(load_fn.call(&mut store, 0x30000).is_err());
-    // assert!(store_fn.call(&mut store, (0x30000, 0)).is_err());
-    //
-    // assert!(memory.grow(&mut store, 1).is_err());
-    // assert!(memory.grow(&mut store, 0).is_ok());
-    //
-    // println!("Creating stand-alone memory...");
-    // let memorytype = MemoryType::new(5, Some(5));
-    // let memory2 = Memory::new(&mut store, memorytype)?;
-    // assert_eq!(memory2.size(&store), 5);
-    // assert!(memory2.grow(&mut store, 1).is_err());
-    // assert!(memory2.grow(&mut store, 0).is_ok());
+    assert_eq!(u32::from_le_bytes(memory.data(&store)[0..4].try_into().unwrap()), 4*4);
+    assert_eq!(sum, 6);
+    println!("Memory state: {:?}", memory.data(&store)[0..16].to_vec());
+    assert_eq!(u32::from_le_bytes(memory.data(&store)[4..8].try_into().unwrap()), sum);
 
     Ok(())
 }
