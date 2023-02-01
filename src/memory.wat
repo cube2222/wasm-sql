@@ -33,7 +33,12 @@
       (i32.add)
       (local.set $sum)
 
-      ;; log all variables on every loop iteration
+      (local.get $i)
+      (local.get $i)
+      (i32.load)
+      (i32.const 2)
+      (i32.add)
+      (i32.store)
 
       ;; move $i by one element
       (local.get $i)
@@ -52,13 +57,13 @@
 ;;    (i32.const 32)
 ;;    (memory.fill)
 
-    (i32.const 0)
-    (local.get $i)
-    (i32.store)
-
-    (i32.const 4)
-    (local.get $sum)
-    (i32.store)
+;;    (i32.const 0)
+;;    (local.get $i)
+;;    (i32.store)
+;;
+;;    (i32.const 4)
+;;    (local.get $sum)
+;;    (i32.store)
   )
 
 ;;  (func (export "execute")

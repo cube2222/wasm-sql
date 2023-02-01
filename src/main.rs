@@ -58,7 +58,7 @@ fn main() -> Result<()> {
     // execute_fn.call(&mut store, ())?;
     // println!("Executed twice after {:?}", start.elapsed()?);
 
-    assert_eq!(u32::from_le_bytes(memory.data(&store)[0..4].try_into().unwrap()), 4*10_000_000);
+    // assert_eq!(u32::from_le_bytes(memory.data(&store)[0..4].try_into().unwrap()), 4*10_000_000);
     assert_eq!(sum, 45000000);
     println!("Memory state: {:?}", memory.data(&store)[0..16].to_vec());
     assert_eq!(u32::from_le_bytes(memory.data(&store)[4..8].try_into().unwrap()), sum);
