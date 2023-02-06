@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::fmt::format;
 use std::fs::File;
 use std::io::Write;
-use std::iter::Map;
 use std::time::SystemTime;
 use anyhow::Result;
 use wasmtime::*;
@@ -19,7 +18,7 @@ enum Node {
 }
 
 // TODO: Also store field mapping in context, so that they can come from higher scopes.
-type ProduceFn<'a> = Box<dyn Fn(&mut ProduceContext, &VariableMapping) + 'a>;
+type ProduceFn<'a> = Box<dyn Fn(&mut ProduceContext, &VariableMapping) -> Result<()>+ 'a>;
 type VariableMapping = HashMap<String, (String, ValueMetadata)>;
 
 #[derive(Clone)]
@@ -57,7 +56,7 @@ impl Node {
                 produce(&mut ProduceContext {
                     continue_label: loop_name.clone(),
                     gen_ctx: ctx,
-                }, &fields);
+                }, &fields)?;
                 ctx.buffer.push_str(";; increment i\n");
                 ctx.buffer.push_str(&format!("(local.get ${})\n", i_name));
                 ctx.buffer.push_str(&format!("(i32.const 1)\n"));
@@ -84,24 +83,26 @@ impl Node {
                     ctx.gen_ctx.buffer.push_str(&format!("(i32.const {})\n", 4));
                     ctx.gen_ctx.buffer.push_str(&format!("(i32.add)\n"));
                     ctx.gen_ctx.buffer.push_str(&format!("(local.set ${})\n", &output_ptr_name));
+                    Ok(())
                 }))?;
             }
             Node::Map(source, exprs, out_fields) => {
                 ctx.buffer.push_str(";; declare map output\n");
                 let field_names = out_fields.iter().enumerate().map(|(i, field)| {
                     let field_name = ctx.get_unique(field);
-                    let field_type = exprs[i].value_type();
-                    ctx.buffer.push_str(&format!("(local ${} i32)\n", &field_name));
-                    (field_name, ValueMetadata{ value_type: ValueType::Int, nullable: false })
-                }).collect::<Vec<_>>();
+                    let field_type = exprs[i].value_type()?;
+                    ctx.buffer.push_str(&format!("(local ${} {})\n", &field_name, field_type.primitive_type_name()));
+                    Ok((field_name, ValueMetadata{ value_type: field_type, nullable: false }))
+                }).collect::<Result<Vec<_>>>()?;
                 let field_mapping = out_fields.iter().zip(field_names.iter()).map(|(a, b)| (a.to_string(), (b.0.to_string(), b.1.clone()))).collect::<VariableMapping>();
                 source.generate(ctx, Box::new(|ctx, fields| {
                     for (i, field) in out_fields.iter().enumerate() {
                         ctx.gen_ctx.buffer.push_str(&format!(";; evaluate {}\n", field));
-                        exprs[i].generate(ctx.gen_ctx, fields);
+                        exprs[i].generate(ctx.gen_ctx, fields)?;
                         ctx.gen_ctx.buffer.push_str(&format!("(local.set ${})\n", &field_names[i].0));
                     }
-                    produce(ctx, &field_mapping);
+                    produce(ctx, &field_mapping)?;
+                    Ok(())
                 }))?;
             }
             Node::Sum(source, field) => {
@@ -115,13 +116,14 @@ impl Node {
                     ctx.gen_ctx.buffer.push_str(&format!("(local.get ${})\n", &field_name.0));
                     ctx.gen_ctx.buffer.push_str(&format!("(i32.add)\n"));
                     ctx.gen_ctx.buffer.push_str(&format!("(local.set ${})\n", &sum_name));
+                    Ok(())
                 }))?;
                 let mut out_field_mapping = HashMap::new();
                 out_field_mapping.insert(field.to_string() + "_sum", (sum_name, ValueMetadata{ value_type: ValueType::Int, nullable: false }));
                 produce(&mut ProduceContext {
                     continue_label: "<unreachable>".to_string(), // TODO: Should also come in GenContext.
                     gen_ctx: ctx,
-                }, &out_field_mapping);
+                }, &out_field_mapping)?;
             }
         }
         Ok(())
@@ -210,7 +212,7 @@ fn main() -> Result<()> {
 (func (export "execute")
 "#);
 
-    plan.generate(&mut gen_ctx, Box::new(|ctx, fields| {}));
+    plan.generate(&mut gen_ctx, Box::new(|ctx, fields| {Ok(())}))?;
 
     gen_ctx.buffer.push_str(")\n");
     gen_ctx.buffer.push_str(")\n");
