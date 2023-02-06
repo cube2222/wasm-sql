@@ -13,15 +13,36 @@ enum Node {
     Map(Box<Node>, Vec<Expr>, Vec<String>),
     // Filter(Box<Node>, Expr),
     Range(usize, usize),
-    Output(Box<Node>, String, usize), // source, field name, memory index
+    Output(Box<Node>, String, usize),
+    // source, field name, memory index
     Sum(Box<Node>, String),    // source, field name
 }
 
 // TODO: Also store field mapping in context, so that they can come from higher scopes.
-type ProduceFn<'a> = Box<dyn Fn(&mut ProduceContext, &HashMap<String, String>) + 'a>;
+type ProduceFn<'a> = Box<dyn Fn(&mut ProduceContext, &VariableMapping) + 'a>;
+type VariableMapping = HashMap<String, (String, ValueMetadata)>;
+
+#[derive(Clone)]
+enum ValueType {
+    Int,
+}
+
+impl ValueType {
+    fn primitive_type_name(&self) -> String {
+        match self {
+            ValueType::Int => "i32".to_string(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ValueMetadata {
+    value_type: ValueType,
+    nullable: bool,
+}
 
 impl Node {
-    fn generate(&self, ctx: &mut GenContext, produce: ProduceFn) {
+    fn generate(&self, ctx: &mut GenContext, produce: ProduceFn) -> Result<()> {
         match self {
             Node::Range(start, end) => {
                 ctx.buffer.push_str(";; declare loop variable\n");
@@ -30,8 +51,8 @@ impl Node {
                 ctx.buffer.push_str(&format!("(i32.const {})\n", start));
                 ctx.buffer.push_str(&format!("(local.set ${})\n", i_name));
                 let loop_name = ctx.get_unique("loop");
-                let mut fields = HashMap::new();
-                fields.insert("i".to_string(), i_name.to_string());
+                let mut fields: VariableMapping = HashMap::new();
+                fields.insert("i".to_string(), (i_name.to_string(), ValueMetadata { value_type: ValueType::Int, nullable: false }));
                 ctx.buffer.push_str(&format!("(loop ${}\n", &loop_name));
                 produce(&mut ProduceContext {
                     continue_label: loop_name.clone(),
@@ -56,31 +77,32 @@ impl Node {
                     let field_name = fields.get(field).unwrap();
                     ctx.gen_ctx.buffer.push_str(";; store output\n");
                     ctx.gen_ctx.buffer.push_str(&format!("(local.get ${})\n", &output_ptr_name));
-                    ctx.gen_ctx.buffer.push_str(&format!("(local.get ${})\n", &field_name));
+                    ctx.gen_ctx.buffer.push_str(&format!("(local.get ${})\n", &field_name.0));
                     ctx.gen_ctx.buffer.push_str(&format!("(i32.store {})\n", memory_index));
                     ctx.gen_ctx.buffer.push_str(";; update output pointer\n");
                     ctx.gen_ctx.buffer.push_str(&format!("(local.get ${})\n", &output_ptr_name));
                     ctx.gen_ctx.buffer.push_str(&format!("(i32.const {})\n", 4));
                     ctx.gen_ctx.buffer.push_str(&format!("(i32.add)\n"));
                     ctx.gen_ctx.buffer.push_str(&format!("(local.set ${})\n", &output_ptr_name));
-                }));
+                }))?;
             }
             Node::Map(source, exprs, out_fields) => {
                 ctx.buffer.push_str(";; declare map output\n");
-                let field_names = out_fields.iter().map(|field| {
+                let field_names = out_fields.iter().enumerate().map(|(i, field)| {
                     let field_name = ctx.get_unique(field);
+                    let field_type = exprs[i].value_type();
                     ctx.buffer.push_str(&format!("(local ${} i32)\n", &field_name));
-                    field_name
-                }).collect::<Vec<String>>();
-                let field_mapping = out_fields.iter().zip(field_names.iter()).map(|(a, b)| (a.to_string(), b.to_string())).collect::<HashMap<String, String>>();
+                    (field_name, ValueMetadata{ value_type: ValueType::Int, nullable: false })
+                }).collect::<Vec<_>>();
+                let field_mapping = out_fields.iter().zip(field_names.iter()).map(|(a, b)| (a.to_string(), (b.0.to_string(), b.1.clone()))).collect::<VariableMapping>();
                 source.generate(ctx, Box::new(|ctx, fields| {
                     for (i, field) in out_fields.iter().enumerate() {
                         ctx.gen_ctx.buffer.push_str(&format!(";; evaluate {}\n", field));
                         exprs[i].generate(ctx.gen_ctx, fields);
-                        ctx.gen_ctx.buffer.push_str(&format!("(local.set ${})\n", &field_names[i]));
+                        ctx.gen_ctx.buffer.push_str(&format!("(local.set ${})\n", &field_names[i].0));
                     }
                     produce(ctx, &field_mapping);
-                }));
+                }))?;
             }
             Node::Sum(source, field) => {
                 ctx.buffer.push_str(";; declare sum output\n");
@@ -90,18 +112,19 @@ impl Node {
                     ctx.gen_ctx.buffer.push_str(";; add to sum\n");
                     let field_name = fields.get(field).unwrap();
                     ctx.gen_ctx.buffer.push_str(&format!("(local.get ${})\n", &sum_name));
-                    ctx.gen_ctx.buffer.push_str(&format!("(local.get ${})\n", &field_name));
+                    ctx.gen_ctx.buffer.push_str(&format!("(local.get ${})\n", &field_name.0));
                     ctx.gen_ctx.buffer.push_str(&format!("(i32.add)\n"));
                     ctx.gen_ctx.buffer.push_str(&format!("(local.set ${})\n", &sum_name));
-                }));
+                }))?;
                 let mut out_field_mapping = HashMap::new();
-                out_field_mapping.insert(field.to_string()+"_sum", sum_name);
+                out_field_mapping.insert(field.to_string() + "_sum", (sum_name, ValueMetadata{ value_type: ValueType::Int, nullable: false }));
                 produce(&mut ProduceContext {
                     continue_label: "<unreachable>".to_string(), // TODO: Should also come in GenContext.
                     gen_ctx: ctx,
                 }, &out_field_mapping);
             }
         }
+        Ok(())
     }
 }
 
@@ -112,20 +135,28 @@ enum Expr {
 }
 
 impl Expr {
-    fn generate(&self, ctx: &mut GenContext, fields: &HashMap<String, String>) {
+    fn generate(&self, ctx: &mut GenContext, fields: &VariableMapping) -> Result<()> {
         match self {
             Expr::Variable(name) => {
                 let field_name = fields.get(name).unwrap();
                 ctx.buffer.push_str(";; load variable\n");
-                ctx.buffer.push_str(&format!("(local.get ${})\n", &field_name));
+                ctx.buffer.push_str(&format!("(local.get ${})\n", &field_name.0));
             }
             Expr::Add(left, right) => {
                 ctx.buffer.push_str(";; add\n");
-                left.generate(ctx, fields);
-                right.generate(ctx, fields);
+                left.generate(ctx, fields)?;
+                right.generate(ctx, fields)?;
                 ctx.buffer.push_str("(i32.add)\n");
             }
         }
+        Ok(())
+    }
+
+    fn value_type(&self) -> Result<ValueType> {
+        Ok(match self {
+            Expr::Variable(_) => ValueType::Int,
+            Expr::Add(_, _) => ValueType::Int,
+        })
     }
 }
 
