@@ -10,18 +10,21 @@ use anyhow::Result;
 use wasmtime::*;
 
 enum Node {
-    // Map(Box<Node>, Vec<Expr>, Vec<String>),
+    Map(Box<Node>, Vec<Expr>, Vec<String>),
     // Filter(Box<Node>, Expr),
     Range(usize, usize),
     Output(Box<Node>, String, usize), // source, field name, memory index
+    Sum(Box<Node>, String),    // source, field name
 }
 
+// TODO: Also store field mapping in context, so that they can come from higher scopes.
 type ProduceFn<'a> = Box<dyn Fn(&mut ProduceContext, &HashMap<String, String>) + 'a>;
 
 impl Node {
     fn generate(&self, ctx: &mut GenContext, produce: ProduceFn) {
         match self {
             Node::Range(start, end) => {
+                ctx.buffer.push_str(";; declare loop variable\n");
                 let i_name = ctx.get_unique("i");
                 ctx.buffer.push_str(&format!("(local ${} i32)\n", i_name));
                 ctx.buffer.push_str(&format!("(i32.const {})\n", start));
@@ -62,6 +65,42 @@ impl Node {
                     ctx.gen_ctx.buffer.push_str(&format!("(local.set ${})\n", &output_ptr_name));
                 }));
             }
+            Node::Map(source, exprs, out_fields) => {
+                ctx.buffer.push_str(";; declare map output\n");
+                let field_names = out_fields.iter().map(|field| {
+                    let field_name = ctx.get_unique(field);
+                    ctx.buffer.push_str(&format!("(local ${} i32)\n", &field_name));
+                    field_name
+                }).collect::<Vec<String>>();
+                let field_mapping = out_fields.iter().zip(field_names.iter()).map(|(a, b)| (a.to_string(), b.to_string())).collect::<HashMap<String, String>>();
+                source.generate(ctx, Box::new(|ctx, fields| {
+                    for (i, field) in out_fields.iter().enumerate() {
+                        ctx.gen_ctx.buffer.push_str(&format!(";; evaluate {}\n", field));
+                        exprs[i].generate(ctx.gen_ctx, fields);
+                        ctx.gen_ctx.buffer.push_str(&format!("(local.set ${})\n", &field_names[i]));
+                    }
+                    produce(ctx, &field_mapping);
+                }));
+            }
+            Node::Sum(source, field) => {
+                ctx.buffer.push_str(";; declare sum output\n");
+                let sum_name = ctx.get_unique("sum");
+                ctx.buffer.push_str(&format!("(local ${} i32)\n", &sum_name));
+                source.generate(ctx, Box::new(|ctx, fields| {
+                    ctx.gen_ctx.buffer.push_str(";; add to sum\n");
+                    let field_name = fields.get(field).unwrap();
+                    ctx.gen_ctx.buffer.push_str(&format!("(local.get ${})\n", &sum_name));
+                    ctx.gen_ctx.buffer.push_str(&format!("(local.get ${})\n", &field_name));
+                    ctx.gen_ctx.buffer.push_str(&format!("(i32.add)\n"));
+                    ctx.gen_ctx.buffer.push_str(&format!("(local.set ${})\n", &sum_name));
+                }));
+                let mut out_field_mapping = HashMap::new();
+                out_field_mapping.insert(field.to_string()+"_sum", sum_name);
+                produce(&mut ProduceContext {
+                    continue_label: "<unreachable>".to_string(), // TODO: Should also come in GenContext.
+                    gen_ctx: ctx,
+                }, &out_field_mapping);
+            }
         }
     }
 }
@@ -70,6 +109,24 @@ enum Expr {
     Variable(String),
     // Constant(Value),
     Add(Box<Expr>, Box<Expr>),
+}
+
+impl Expr {
+    fn generate(&self, ctx: &mut GenContext, fields: &HashMap<String, String>) {
+        match self {
+            Expr::Variable(name) => {
+                let field_name = fields.get(name).unwrap();
+                ctx.buffer.push_str(";; load variable\n");
+                ctx.buffer.push_str(&format!("(local.get ${})\n", &field_name));
+            }
+            Expr::Add(left, right) => {
+                ctx.buffer.push_str(";; add\n");
+                left.generate(ctx, fields);
+                right.generate(ctx, fields);
+                ctx.buffer.push_str("(i32.add)\n");
+            }
+        }
+    }
 }
 
 struct GenContext {
@@ -91,8 +148,26 @@ struct ProduceContext<'a> {
 }
 
 fn main() -> Result<()> {
-    let plan = Node::Range(3, 10);
-    let plan = Node::Output(Box::new(plan), "i".to_string(), 1);
+    let plan = Node::Range(3, 1000000000);
+    let plan = Node::Map(
+        Box::new(plan),
+        vec![
+            Expr::Add(
+                Box::new(Expr::Variable("i".to_string())),
+                Box::new(Expr::Variable("i".to_string())),
+            ),
+            Expr::Add(
+                Box::new(Expr::Variable("i".to_string())),
+                Box::new(Expr::Variable("i".to_string())),
+            ),
+        ],
+        vec!["a".to_string(), "b".to_string()],
+    );
+    let plan = Node::Sum(
+        Box::new(plan),
+        "a".to_string(),
+    );
+    let plan = Node::Output(Box::new(plan), "a_sum".to_string(), 1);
 
     let mut gen_ctx = GenContext {
         unique_name_number: 0,
